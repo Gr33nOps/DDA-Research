@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>DDA Research Game — Cross-Platform</title>
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+    background:#111;color:#fff;
+    font-family:system-ui,Segoe UI,Roboto,sans-serif;
+    display:flex;justify-content:center;align-items:center;
+    min-height:100vh;padding:16px;
+    touch-action:none;
+}
+.container{
+    width:100%;max-width:600px;
+    background:#222;padding:18px;
+    border-radius:10px;border:1px solid #333
+}
+h1{font-size:22px;margin-bottom:4px}
+.subtitle{font-size:12px;color:#aaa;margin-bottom:14px}
+
+.screen{display:none}
+.screen.active{display:block}
+
+button{
+    padding:12px 16px;
+    border:none;border-radius:8px;
+    font-weight:600;cursor:pointer;
+    width:100%;margin-bottom:10px
+}
+.fixed{background:#0b84ff;color:#fff}
+.adaptive{background:#7c3aed;color:#fff}
+.secondary{background:#333;color:#fff}
+
+button:disabled{
+    background:#555;
+    cursor:not-allowed;
+}
+
+.stats-bar{
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:10px;
+    background:#2a2a2a;padding:12px;
+    border-radius:8px;border:1px solid #333;
+    margin-bottom:10px
+}
+.stat-label{font-size:10px;color:#9aa;text-transform:uppercase}
+.stat-value{font-size:16px;font-weight:700}
+
+#gameCanvas{
+    height:420px;
+    background:#151515;
+    border-radius:8px;border:1px solid #333;
+    position:relative;overflow:hidden;
+    margin-bottom:10px
+}
+
+.player{
+    position:absolute;width:42px;height:42px;
+    bottom:18px;transform:translateX(-50%);
+    background:linear-gradient(135deg,#0b84ff,#005ea8);
+    border-radius:6px;
+    transition:left 0.15s ease-out;
+}
+.obstacle{
+    position:absolute;width:42px;height:42px;
+    transform:translateX(-50%) rotate(45deg);
+    background:linear-gradient(135deg,#dc2626,#991b1b)
+}
+.collectible{
+    position:absolute;width:32px;height:32px;
+    transform:translateX(-50%);
+    border-radius:50%;
+    background:linear-gradient(135deg,#fbbf24,#f59e0b)
+}
+
+.controls{
+    display:flex;gap:12px
+}
+.controls button{
+    flex:1;
+    font-size:18px;
+    background:#444
+}
+
+.hit-flash{animation:hit .2s}
+@keyframes hit{from{box-shadow:inset 0 0 0 300px rgba(220,38,38,.15)}to{}}
+.collect-flash{animation:collect .2s}
+@keyframes collect{from{box-shadow:inset 0 0 0 300px rgba(251,191,36,.15)}to{}}
+
+h2{font-size:18px;margin-bottom:10px}
+p{margin-bottom:14px;line-height:1.5}
+a{text-decoration:none}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<h1>DDA Research Game</h1>
+<p class="subtitle">Cross-Platform Lane-Based Adaptive Difficulty</p>
+
+<!-- MENU -->
+<div id="menu" class="screen active">
+    <button class="fixed" onclick="startGame('fixed')">Fixed Difficulty</button>
+    <button id="adaptiveBtn" class="adaptive" disabled title="Complete Fixed first" onclick="startGame('adaptive')">
+        Adaptive Difficulty 🔒
+    </button>
+</div>
+
+<!-- GAME -->
+<div id="game" class="screen">
+    <div class="stats-bar">
+        <div><div class="stat-label">Mode</div><div class="stat-value" id="mode"></div></div>
+        <div><div class="stat-label">Score</div><div class="stat-value" id="score">0</div></div>
+        <div><div class="stat-label">Mistakes</div><div class="stat-value" id="mistakes">0</div></div>
+        <div><div class="stat-label">Difficulty</div><div class="stat-value" id="difficulty">3</div></div>
+        <div><div class="stat-label">Interactions</div><div class="stat-value" id="interactions">0</div></div>
+    </div>
+
+    <div id="gameCanvas">
+        <div class="player" id="player"></div>
+    </div>
+
+    <!-- MOBILE CONTROLS -->
+    <div class="controls">
+        <button onclick="moveLane(-1)">◀</button>
+        <button onclick="moveLane(1)">▶</button>
+    </div>
+</div>
+
+<!-- FORM PROMPT -->
+<div id="formScreen" class="screen">
+    <h2>Thank you for playing!</h2>
+    <p>Please fill out the feedback form to complete the study:</p>
+    <a href="https://docs.google.com/forms/d/e/1FAIpQLSd0Blfsm120BHedJyPrTHqoVjemJXaqKh5RzwBibhtGlRWc3A/viewform?usp=dialog" target="_blank">
+        <button class="secondary">Go to Form</button>
+    </a>
+</div>
+
+</div>
+
+<script>
+/* ================= CONFIG ================= */
+const LANES=[10,30,50,70,90];
+const MAX_INTERACTIONS=50;
+
+const DIFFICULTIES=[
+    {speed:3.0, obs:150, col:190},
+    {speed:3.8, obs:120, col:155},
+    {speed:4.8, obs:90,  col:125},
+    {speed:6.0, obs:65,  col:100},
+    {speed:7.4, obs:42,  col:135}
+];
+
+/* ================= STATE ================= */
+let game=null, history=[], animationFrameId=null;
+const canvas=document.getElementById("gameCanvas");
+const player=document.getElementById("player");
+
+/* ================= FLOW ================= */
+function startGame(mode){
+    // Cancel any existing animation loop
+    if(animationFrameId) cancelAnimationFrame(animationFrameId);
+    
+    game={
+        mode,lane:2,frame:0,
+        score:0,mistakes:0,interactions:0,
+        difficulty:mode==="fixed"?2:1,
+        speed:0,obsRate:0,colRate:0,
+        obstacles:[],collectibles:[]
+    };
+    history=[];
+    applyDifficulty(game.difficulty);
+    show("game");
+    updateUI();
+    loop();
+}
+
+function applyDifficulty(i){
+    game.difficulty=i;
+    const d=DIFFICULTIES[i];
+    game.speed=d.speed;
+    game.obsRate=d.obs;
+    game.colRate=d.col;
+    document.getElementById("difficulty").textContent=i+1;
+}
+
+/* ================= LOOP ================= */
+function loop(){
+    if(!game || game.interactions>=MAX_INTERACTIONS){
+        endGame();
+        return;
+    }
+    
+    animationFrameId=requestAnimationFrame(loop);
+    game.frame++;
+
+    if(game.frame%game.obsRate===0) spawn("obstacle");
+    if(game.frame%game.colRate===0) spawn("collectible");
+
+    updateObjects();
+    render();
+}
+
+/* ================= OBJECTS ================= */
+function spawn(type){
+    const lane=Math.floor(Math.random()*5);
+    (type==="obstacle"?game.obstacles:game.collectibles)
+        .push({lane,y:-40});
+}
+
+function updateObjects(){
+    game.obstacles.forEach(o=>o.y+=game.speed);
+    game.collectibles.forEach(c=>c.y+=game.speed);
+    checkCollisions();
+    cleanupObjects();
+}
+
+function cleanupObjects(){
+    const maxY=canvas.clientHeight+50;
+    game.obstacles=game.obstacles.filter(o=>o.y<maxY);
+    game.collectibles=game.collectibles.filter(c=>c.y<maxY);
+}
+
+/* ================= COLLISION + ADAPT ================= */
+function checkCollisions(){
+    const hitY=canvas.clientHeight-70;
+    const hitYMax=canvas.clientHeight-40;
+
+    game.obstacles=game.obstacles.filter(o=>{
+        if(o.lane===game.lane && o.y>=hitY && o.y<=hitYMax && !o.hit){
+            o.hit=true;
+            register(false);
+            return false;
+        }
+        return true;
+    });
+
+    game.collectibles=game.collectibles.filter(c=>{
+        if(c.lane===game.lane && c.y>=hitY && c.y<=hitYMax && !c.collected){
+            c.collected=true;
+            register(true);
+            return false;
+        }
+        return true;
+    });
+}
+
+function register(success){
+    game.interactions++;
+    history.push(success?1:0);
+    if(history.length>5) history.shift();
+
+    success?game.score+=10:game.mistakes++;
+
+    if(game.mode==="adaptive" && history.length===5){
+        const rate=history.reduce((a,b)=>a+b,0)/5;
+        if(rate>=0.8) applyDifficulty(Math.min(4,game.difficulty+1));
+        else if(rate<=0.4) applyDifficulty(Math.max(0,game.difficulty-1));
+    }
+
+    canvas.classList.add(success?"collect-flash":"hit-flash");
+    setTimeout(()=>canvas.classList.remove("collect-flash","hit-flash"),200);
+    updateUI();
+}
+
+/* ================= END GAME ================= */
+function endGame(){
+    if(animationFrameId){
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId=null;
+    }
+    
+    if(!game) return;
+    
+    if(game.mode==="fixed"){
+        alert("Fixed difficulty completed! Adaptive is now unlocked.");
+        const adaptiveBtn = document.getElementById("adaptiveBtn");
+        adaptiveBtn.disabled = false;
+        adaptiveBtn.textContent = "Adaptive Difficulty"; 
+        adaptiveBtn.title = ""; 
+        show("menu");
+    } else {
+        show("formScreen");
+    }
+    
+    game=null;
+}
+
+/* ================= RENDER ================= */
+function render(){
+    canvas.querySelectorAll(".obstacle,.collectible").forEach(e=>e.remove());
+    game.obstacles.forEach(o=>draw("obstacle",o));
+    game.collectibles.forEach(c=>draw("collectible",c));
+    player.style.left=LANES[game.lane]+"%";
+}
+
+function draw(cls,obj){
+    const el=document.createElement("div");
+    el.className=cls;
+    el.style.left=LANES[obj.lane]+"%";
+    el.style.top=obj.y+"px";
+    canvas.appendChild(el);
+}
+
+/* ================= INPUT ================= */
+document.addEventListener("keydown",e=>{
+    if(!game) return;
+    if(e.key==="ArrowLeft") moveLane(-1);
+    if(e.key==="ArrowRight") moveLane(1);
+});
+
+function moveLane(dir){
+    if(!game) return;
+    game.lane=Math.max(0,Math.min(4,game.lane+dir));
+}
+
+let touchStartX=0;
+canvas.addEventListener("touchstart",e=>{
+    touchStartX=e.touches[0].clientX;
+},{passive:true});
+canvas.addEventListener("touchend",e=>{
+    if(!game) return;
+    const dx=e.changedTouches[0].clientX-touchStartX;
+    if(dx>40) moveLane(1);
+    else if(dx<-40) moveLane(-1);
+});
+
+/* ================= UI ================= */
+function updateUI(){
+    document.getElementById("mode").textContent=game.mode;
+    document.getElementById("score").textContent=game.score;
+    document.getElementById("mistakes").textContent=game.mistakes;
+    document.getElementById("interactions").textContent=
+        game.interactions+"/"+MAX_INTERACTIONS;
+}
+
+function show(id){
+    document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+    document.getElementById(id).classList.add("active");
+}
+</script>
+</body>
+</html>
